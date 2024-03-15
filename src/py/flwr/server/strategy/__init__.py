@@ -14,7 +14,7 @@
 # ==============================================================================
 """Contains the strategy abstraction and different implementations."""
 
-
+from .afl import AFL as AFL
 from .bulyan import Bulyan as Bulyan
 from .dp_adaptive_clipping import (
     DifferentialPrivacyClientSideAdaptiveClipping as DifferentialPrivacyClientSideAdaptiveClipping,
@@ -49,6 +49,7 @@ from .qfedavg import QFedAvg as QFedAvg
 from .strategy import Strategy as Strategy
 
 __all__ = [
+    "AFL",
     "Bulyan",
     "DPFedAvgAdaptive",
     "DPFedAvgFixed",

@@ -1,4 +1,4 @@
-# Copyright 2020 Flower Labs GmbH. All Rights Reserved.
+# Copyright 2024 Flower Labs GmbH. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Federated Averaging (FedAvg) [McMahan et al., 2016] strategy.
+"""Agnostic Federated Learning (AFL) [Mohri et al., 2019] strategy.
 
-Paper: arxiv.org/abs/1602.05629
+Paper: arxiv.org/abs/1902.00146v1
 """
 
+from collections import defaultdict
+import numpy as np
 
 from logging import WARNING
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -37,7 +39,7 @@ from flwr.common.logger import log
 from flwr.server.client_manager import ClientManager
 from flwr.server.client_proxy import ClientProxy
 
-from .aggregate import aggregate, aggregate_inplace, weighted_loss_avg
+from .aggregate import aggregate, weighted_loss_avg
 from .strategy import Strategy
 from .utils import project
 
@@ -50,13 +52,17 @@ than or equal to the values of `min_fit_clients` and `min_evaluate_clients`.
 
 
 # pylint: disable=line-too-long
-class FedAvg(Strategy):
-    """Federated Averaging strategy.
+class AFL(Strategy):
+    """Agnostic Federated Learning Strategy
 
-    Implementation based on https://arxiv.org/abs/1602.05629
+    Implementation based on https://arxiv.org/abs/1902.00146v1
+    This implementation uses projected gradient descent to
+    solve the minimax optimisation problem set out in the paper.
 
     Parameters
     ----------
+    lambda_learning_rate: float, optional
+        The learning rate for the lambda vector that maximises client loss.
     fraction_fit : float, optional
         Fraction of clients used during training. In case `min_fit_clients`
         is larger than `fraction_fit * available_clients`, `min_fit_clients`
@@ -91,6 +97,7 @@ class FedAvg(Strategy):
     def __init__(
         self,
         *,
+        lambda_learning_rate: float = 3e-4,
         fraction_fit: float = 1.0,
         fraction_evaluate: float = 1.0,
         min_fit_clients: int = 2,
@@ -108,7 +115,7 @@ class FedAvg(Strategy):
         initial_parameters: Optional[Parameters] = None,
         fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
         evaluate_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
-        inplace: bool = True,
+        return_lambdas=False,
     ) -> None:
         super().__init__()
 
@@ -130,11 +137,17 @@ class FedAvg(Strategy):
         self.initial_parameters = initial_parameters
         self.fit_metrics_aggregation_fn = fit_metrics_aggregation_fn
         self.evaluate_metrics_aggregation_fn = evaluate_metrics_aggregation_fn
-        self.inplace = inplace
+        self.lambda_learning_rate = lambda_learning_rate
+        # If the model is never initalised, use a defaultdict of 1 for
+        # the lambdas.
+        # The projection steps will still make sure that the lambdas are
+        # normalised
+        self.lambdas = defaultdict(lambda: 1.0)  
+        self.return_lambdas = return_lambdas
 
     def __repr__(self) -> str:
         """Compute a string representation of the strategy."""
-        rep = f"FedAvg(accept_failures={self.accept_failures})"
+        rep = f"AFL(accept_failures={self.accept_failures})"
         return rep
 
     def num_fit_clients(self, num_available_clients: int) -> Tuple[int, int]:
@@ -153,6 +166,11 @@ class FedAvg(Strategy):
         """Initialize global model parameters."""
         initial_parameters = self.initial_parameters
         self.initial_parameters = None  # Don't keep initial parameters in memory
+        # Initialize the lambdas to 1 / num_clients
+        self.lambdas: Dict[str, float] = {
+            cli.cid: 1.0 / client_manager.num_available()
+            for cli in client_manager.all().values()
+        }
         return initial_parameters
 
     def evaluate(
@@ -216,6 +234,16 @@ class FedAvg(Strategy):
         # Return client/config pairs
         return [(client, evaluate_ins) for client in clients]
 
+    def project(self):
+        # Project on the simplex lambda_1 + ... + lambda_n = 1
+        self.lambdas = {
+            k: v for k, v in zip(
+                self.lambdas.keys(),
+                project(self.lambdas.values())
+            )
+        }
+
+
     def aggregate_fit(
         self,
         server_round: int,
@@ -229,26 +257,43 @@ class FedAvg(Strategy):
         if not self.accept_failures and failures:
             return None, {}
 
-        if self.inplace:
-            # Does in-place weighted average of results
-            aggregated_ndarrays = aggregate_inplace(results)
-        else:
-            # Convert results
-            weights_results = [
-                (parameters_to_ndarrays(fit_res.parameters), fit_res.num_examples)
-                for _, fit_res in results
-            ]
-            aggregated_ndarrays = aggregate(weights_results)
+        for cli, res in results:
+            assert "train_loss" in res.metrics.keys(), f'Loss not found in the results of client {cli}. AFL requires the models to return the training loss under the key "train_loss"'
+
+            
+
+        for cli, res in results:
+            self.lambdas[cli.cid] += res.metrics['train_loss'] * self.lambda_learning_rate
+
+        self.project()
+
+        # TODO: change this
+        # Aggregate the results weighting by the lambdas
+        lambda_weighted_results = [
+            (parameters_to_ndarrays(fit_res.parameters), self.lambdas[cli.cid])
+            for cli, fit_res in results
+        ]
+        aggregated_ndarrays = aggregate(lambda_weighted_results)
+
+        # Update lambdas
+        # As the lambdas change the results linearly in terms of the loss,
+        # the gradient vector is just the loss metrics for each of the clients.
+        # We treat unselected clients as those with 0 loss
 
         parameters_aggregated = ndarrays_to_parameters(aggregated_ndarrays)
+
+        # print(self.lambdas)
 
         # Aggregate custom metrics if aggregation fn was provided
         metrics_aggregated = {}
         if self.fit_metrics_aggregation_fn:
-            fit_metrics = [(res.num_examples, res.metrics) for _, res in results]
+            fit_metrics = [(self.lambdas[cli.cid], res.metrics) for cli, res in results]
             metrics_aggregated = self.fit_metrics_aggregation_fn(fit_metrics)
         elif server_round == 1:  # Only log this warning once
             log(WARNING, "No fit_metrics_aggregation_fn provided")
+
+        if self.return_lambdas:
+            metrics_aggregated['lambdas'] = {**self.lambdas}
 
         return parameters_aggregated, metrics_aggregated
 
@@ -265,20 +310,26 @@ class FedAvg(Strategy):
         if not self.accept_failures and failures:
             return None, {}
 
+        # Make sure we add everything to the lambdas dict
+        _ = [self.lambdas[cli.cid] for cli, _ in results]
+        self.project()
+
         # Aggregate loss
         loss_aggregated = weighted_loss_avg(
             [
-                (evaluate_res.num_examples, evaluate_res.loss)
-                for _, evaluate_res in results
+                (self.lambdas[cli.cid], evaluate_res.loss)
+                for cli, evaluate_res in results
             ]
         )
 
         # Aggregate custom metrics if aggregation fn was provided
         metrics_aggregated = {}
         if self.evaluate_metrics_aggregation_fn:
-            eval_metrics = [(res.num_examples, res.metrics) for _, res in results]
+            eval_metrics = [(self.lambdas[cli.cid], res.metrics) for cli, res in results]
             metrics_aggregated = self.evaluate_metrics_aggregation_fn(eval_metrics)
         elif server_round == 1:  # Only log this warning once
             log(WARNING, "No evaluate_metrics_aggregation_fn provided")
+        if self.return_lambdas:
+            metrics_aggregated['lambdas'] = {**self.lambdas}
 
         return loss_aggregated, metrics_aggregated
