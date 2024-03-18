@@ -98,6 +98,7 @@ class AFL(Strategy):
         self,
         *,
         lambda_learning_rate: float = 3e-4,
+        return_lambdas=False,
         fraction_fit: float = 1.0,
         fraction_evaluate: float = 1.0,
         min_fit_clients: int = 2,
@@ -115,7 +116,6 @@ class AFL(Strategy):
         initial_parameters: Optional[Parameters] = None,
         fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
         evaluate_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
-        return_lambdas=False,
     ) -> None:
         super().__init__()
 
