@@ -13,8 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 
-from .project import project
+"""Utility functions for the AFL strategy."""
+
+from .project import project_on_simplex
 
 __all__ = [
-    "project",
+    "project_on_simplex",
 ]

@@ -28,7 +28,7 @@ from flwr.common import (
     EvaluateRes,
     FitIns,
     FitRes,
-    MetricsAggregationFn,
+    Metrics,
     NDArrays,
     Parameters,
     Scalar,
@@ -39,9 +39,9 @@ from flwr.common.logger import log
 from flwr.server.client_manager import ClientManager
 from flwr.server.client_proxy import ClientProxy
 
-from .aggregate import aggregate, weighted_loss_avg
 from .strategy import Strategy
-from .utils import project
+from .utils import project_on_simplex
+from .aggregate import aggregate, weighted_loss_avg
 
 WARNING_MIN_AVAILABLE_CLIENTS_TOO_LOW = """
 Setting `min_available_clients` lower than `min_fit_clients` or
@@ -53,7 +53,7 @@ than or equal to the values of `min_fit_clients` and `min_evaluate_clients`.
 
 # pylint: disable=line-too-long
 class AFL(Strategy):
-    """Agnostic Federated Learning Strategy
+    """Agnostic Federated Learning Strategy.
 
     Implementation based on https://arxiv.org/abs/1902.00146v1
     This implementation uses projected gradient descent to
@@ -77,7 +77,8 @@ class AFL(Strategy):
         Minimum number of clients used during validation. Defaults to 2.
     min_available_clients : int, optional
         Minimum number of total clients in the system. Defaults to 2.
-    evaluate_fn : Optional[Callable[[int, NDArrays, Dict[str, Scalar]],Optional[Tuple[float, Dict[str, Scalar]]]]]
+    evaluate_fn : Optional[Callable[[int, NDArrays, Dict[str, Scalar]],
+        Optional[Tuple[float, Dict[str, Scalar]]]]]
         Optional function used for validation. Defaults to None.
     on_fit_config_fn : Callable[[int], Dict[str, Scalar]], optional
         Function used to configure training. Defaults to None.
@@ -98,9 +99,9 @@ class AFL(Strategy):
         self,
         *,
         lambda_learning_rate: float = 2e-2,
-        return_lambdas=False,
-        return_per_client_loss=False,
-        lr_schedule=True,
+        return_lambdas: bool = False,
+        return_per_client_loss: bool = False,
+        lr_schedule: bool = True,
         fraction_fit: float = 1.0,
         fraction_evaluate: float = 1.0,
         min_fit_clients: int = 2,
@@ -108,17 +109,21 @@ class AFL(Strategy):
         min_available_clients: int = 2,
         evaluate_fn: (
             Callable[
-                [int, NDArrays, dict[str, Scalar]],
+                [int | float, NDArrays, dict[str, Scalar]],
                 tuple[float, dict[str, Scalar]] | None,
             ]
             | None
         ) = None,
-        on_fit_config_fn: Callable[[int], dict[str, Scalar]] | None = None,
-        on_evaluate_config_fn: Callable[[int], dict[str, Scalar]] | None = None,
+        on_fit_config_fn: Callable[[int | float], dict[str, Scalar]] | None = None,
+        on_evaluate_config_fn: Callable[[int | float], dict[str, Scalar]] | None = None,
         accept_failures: bool = True,
         initial_parameters: Parameters | None = None,
-        fit_metrics_aggregation_fn: MetricsAggregationFn | None = None,
-        evaluate_metrics_aggregation_fn: MetricsAggregationFn | None = None,
+        fit_metrics_aggregation_fn: (
+            Callable[[list[tuple[float, Metrics]]], Metrics] | None
+        ) = None,
+        evaluate_metrics_aggregation_fn: (
+            Callable[[list[tuple[float, Metrics]]], Metrics] | None
+        ) = None,
     ) -> None:
         super().__init__()
 
@@ -145,7 +150,7 @@ class AFL(Strategy):
         self.lambda_learning_rate = (
             (lambda server_round: lambda_learning_rate / np.sqrt(server_round))
             if lr_schedule
-            else (lambda server_round: lambda_learning_rate)
+            else (lambda _: lambda_learning_rate)
         )
 
         # If the model is never initalised, use a defaultdict of 1 for
@@ -224,7 +229,7 @@ class AFL(Strategy):
     ) -> list[tuple[ClientProxy, EvaluateIns]]:
         """Configure the next round of evaluation."""
         # Do not configure federated evaluation if fraction eval is 0.
-        if self.fraction_evaluate == 0.0:
+        if self.fraction_evaluate == 0.0:  # noqa: PLR2004
             return []
 
         # Parameters and config
@@ -245,14 +250,16 @@ class AFL(Strategy):
         # Return client/config pairs
         return [(client, evaluate_ins) for client in clients]
 
-    def project(self):
-        # Project on the simplex lambda_1 + ... + lambda_n = 1
-        self.lambdas = {
-            k: v
-            for k, v in zip(
-                self.lambdas.keys(), project(self.lambdas.values()), strict=False
-            )
-        }
+    def project(self) -> None:
+        """Project on the simplex lambda_1 + ... + lambda_n = 1."""
+        self.lambdas = defaultdict(
+            lambda: 1.0,
+            zip(
+                self.lambdas.keys(),
+                project_on_simplex(list(self.lambdas.values())),
+                strict=False,
+            ),
+        )
 
     def aggregate_fit(
         self,
@@ -269,8 +276,9 @@ class AFL(Strategy):
 
         for cli, res in results:
             assert (
-                "train_loss" in res.metrics.keys()
-            ), f'Loss not found in the results of client {cli}. AFL requires the models to return the training loss under the key "train_loss"'
+                "train_loss" in res.metrics
+            ), f'''Loss not found in the results of client {cli}.
+AFL requires the models to return the training loss under the key "train_loss"'''
 
         for cli, res in results:
             self.lambdas[cli.cid] += res.metrics[
@@ -349,7 +357,5 @@ class AFL(Strategy):
             metrics_aggregated = self.evaluate_metrics_aggregation_fn(eval_metrics)
         elif server_round == 1:  # Only log this warning once
             log(WARNING, "No evaluate_metrics_aggregation_fn provided")
-        if self.return_lambdas:
-            metrics_aggregated["lambdas"] = {**self.lambdas}
 
         return loss_aggregated, metrics_aggregated
