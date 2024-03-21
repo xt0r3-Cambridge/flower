@@ -55,7 +55,7 @@ ConfigsScalarList = Union[MetricsScalarList, List[str], List[bytes], List[bool]]
 ConfigsRecordValues = Union[ConfigsScalar, ConfigsScalarList]
 
 Metrics = Dict[str, Scalar]
-MetricsAggregationFn = Callable[[List[Tuple[int, Metrics]]], Metrics]
+MetricsAggregationFn = Callable[[List[Tuple[int|float, Metrics]]], Metrics]
 
 Config = Dict[str, Scalar]
 Properties = Dict[str, Scalar]

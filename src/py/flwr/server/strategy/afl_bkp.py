@@ -21,7 +21,7 @@ from collections import defaultdict
 import numpy as np
 
 from logging import WARNING
-from collections.abc import Callable
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from flwr.common import (
     EvaluateIns,
@@ -97,28 +97,25 @@ class AFL(Strategy):
     def __init__(
         self,
         *,
-        lambda_learning_rate: float = 2e-2,
+        lambda_learning_rate: float = 3e-5,
         return_lambdas=False,
-        return_per_client_loss=False,
-        lr_schedule=True,
         fraction_fit: float = 1.0,
         fraction_evaluate: float = 1.0,
         min_fit_clients: int = 2,
         min_evaluate_clients: int = 2,
         min_available_clients: int = 2,
-        evaluate_fn: (
+        evaluate_fn: Optional[
             Callable[
-                [int, NDArrays, dict[str, Scalar]],
-                tuple[float, dict[str, Scalar]] | None,
+                [int, NDArrays, Dict[str, Scalar]],
+                Optional[Tuple[float, Dict[str, Scalar]]],
             ]
-            | None
-        ) = None,
-        on_fit_config_fn: Callable[[int], dict[str, Scalar]] | None = None,
-        on_evaluate_config_fn: Callable[[int], dict[str, Scalar]] | None = None,
+        ] = None,
+        on_fit_config_fn: Optional[Callable[[int], Dict[str, Scalar]]] = None,
+        on_evaluate_config_fn: Optional[Callable[[int], Dict[str, Scalar]]] = None,
         accept_failures: bool = True,
-        initial_parameters: Parameters | None = None,
-        fit_metrics_aggregation_fn: MetricsAggregationFn | None = None,
-        evaluate_metrics_aggregation_fn: MetricsAggregationFn | None = None,
+        initial_parameters: Optional[Parameters] = None,
+        fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
+        evaluate_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
     ) -> None:
         super().__init__()
 
@@ -140,19 +137,12 @@ class AFL(Strategy):
         self.initial_parameters = initial_parameters
         self.fit_metrics_aggregation_fn = fit_metrics_aggregation_fn
         self.evaluate_metrics_aggregation_fn = evaluate_metrics_aggregation_fn
-        self.lr_schedule = lr_schedule
-        self.return_per_client_loss = return_per_client_loss
-        self.lambda_learning_rate = (
-            (lambda server_round: lambda_learning_rate / np.sqrt(server_round))
-            if lr_schedule
-            else (lambda server_round: lambda_learning_rate)
-        )
-
+        self.lambda_learning_rate = lambda_learning_rate
         # If the model is never initalised, use a defaultdict of 1 for
         # the lambdas.
         # The projection steps will still make sure that the lambdas are
         # normalised
-        self.lambdas: defaultdict[str, float] = defaultdict(lambda: 1.0)
+        self.lambdas = defaultdict(lambda: 1.0)
         self.return_lambdas = return_lambdas
 
     def __repr__(self) -> str:
@@ -160,33 +150,32 @@ class AFL(Strategy):
         rep = f"AFL(accept_failures={self.accept_failures})"
         return rep
 
-    def num_fit_clients(self, num_available_clients: int) -> tuple[int, int]:
+    def num_fit_clients(self, num_available_clients: int) -> Tuple[int, int]:
         """Return the sample size and the required number of available clients."""
         num_clients = int(num_available_clients * self.fraction_fit)
         return max(num_clients, self.min_fit_clients), self.min_available_clients
 
-    def num_evaluation_clients(self, num_available_clients: int) -> tuple[int, int]:
+    def num_evaluation_clients(self, num_available_clients: int) -> Tuple[int, int]:
         """Use a fraction of available clients for evaluation."""
         num_clients = int(num_available_clients * self.fraction_evaluate)
         return max(num_clients, self.min_evaluate_clients), self.min_available_clients
 
-    def initialize_parameters(self, client_manager: ClientManager) -> Parameters | None:
+    def initialize_parameters(
+        self, client_manager: ClientManager
+    ) -> Optional[Parameters]:
         """Initialize global model parameters."""
         initial_parameters = self.initial_parameters
         self.initial_parameters = None  # Don't keep initial parameters in memory
         # Initialize the lambdas to 1 / num_clients
-        self.lambdas = defaultdict(
-            lambda: 1.0,
-            {
-                cli.cid: 1.0 / client_manager.num_available()
-                for cli in client_manager.all().values()
-            },
-        )
+        self.lambdas: Dict[str, float] = {
+            cli.cid: 1.0 / client_manager.num_available()
+            for cli in client_manager.all().values()
+        }
         return initial_parameters
 
     def evaluate(
         self, server_round: int, parameters: Parameters
-    ) -> tuple[float, dict[str, Scalar]] | None:
+    ) -> Optional[Tuple[float, Dict[str, Scalar]]]:
         """Evaluate model parameters using an evaluation function."""
         if self.evaluate_fn is None:
             # No evaluation function provided
@@ -200,7 +189,7 @@ class AFL(Strategy):
 
     def configure_fit(
         self, server_round: int, parameters: Parameters, client_manager: ClientManager
-    ) -> list[tuple[ClientProxy, FitIns]]:
+    ) -> List[Tuple[ClientProxy, FitIns]]:
         """Configure the next round of training."""
         config = {}
         if self.on_fit_config_fn is not None:
@@ -221,7 +210,7 @@ class AFL(Strategy):
 
     def configure_evaluate(
         self, server_round: int, parameters: Parameters, client_manager: ClientManager
-    ) -> list[tuple[ClientProxy, EvaluateIns]]:
+    ) -> List[Tuple[ClientProxy, EvaluateIns]]:
         """Configure the next round of evaluation."""
         # Do not configure federated evaluation if fraction eval is 0.
         if self.fraction_evaluate == 0.0:
@@ -248,18 +237,15 @@ class AFL(Strategy):
     def project(self):
         # Project on the simplex lambda_1 + ... + lambda_n = 1
         self.lambdas = {
-            k: v
-            for k, v in zip(
-                self.lambdas.keys(), project(self.lambdas.values()), strict=False
-            )
+            k: v for k, v in zip(self.lambdas.keys(), project(self.lambdas.values()))
         }
 
     def aggregate_fit(
         self,
         server_round: int,
-        results: list[tuple[ClientProxy, FitRes]],
-        failures: list[tuple[ClientProxy, FitRes] | BaseException],
-    ) -> tuple[Parameters | None, dict[str, Scalar]]:
+        results: List[Tuple[ClientProxy, FitRes]],
+        failures: List[Union[Tuple[ClientProxy, FitRes], BaseException]],
+    ) -> Tuple[Optional[Parameters], Dict[str, Scalar]]:
         """Aggregate fit results using weighted average."""
         if not results:
             return None, {}
@@ -273,9 +259,9 @@ class AFL(Strategy):
             ), f'Loss not found in the results of client {cli}. AFL requires the models to return the training loss under the key "train_loss"'
 
         for cli, res in results:
-            self.lambdas[cli.cid] += res.metrics[
-                "train_loss"
-            ] * self.lambda_learning_rate(server_round)
+            self.lambdas[cli.cid] += (
+                res.metrics["train_loss"] * self.lambda_learning_rate
+            )
 
         self.project()
 
@@ -297,7 +283,7 @@ class AFL(Strategy):
         # print(self.lambdas)
 
         # Aggregate custom metrics if aggregation fn was provided
-        metrics_aggregated: dict[str, bool | bytes | float | int | str] = {}
+        metrics_aggregated = {}
         if self.fit_metrics_aggregation_fn:
             fit_metrics = [(self.lambdas[cli.cid], res.metrics) for cli, res in results]
             metrics_aggregated = self.fit_metrics_aggregation_fn(fit_metrics)
@@ -305,25 +291,16 @@ class AFL(Strategy):
             log(WARNING, "No fit_metrics_aggregation_fn provided")
 
         if self.return_lambdas:
-            for k, v in self.lambdas.items():
-                metrics_aggregated[f"lambdas_{k}"] = v
-        if self.return_per_client_loss:
-            for cli, res in results:
-                metrics_aggregated[f"client_train_loss_{cli.cid}"] = res.metrics[
-                    "train_loss"
-                ]
-        metrics_aggregated["max_train_loss"] = max(
-            [res.metrics["train_loss"] for cli, res in results]
-        )
+            metrics_aggregated["lambdas"] = {**self.lambdas}
 
         return parameters_aggregated, metrics_aggregated
 
     def aggregate_evaluate(
         self,
         server_round: int,
-        results: list[tuple[ClientProxy, EvaluateRes]],
-        failures: list[tuple[ClientProxy, EvaluateRes] | BaseException],
-    ) -> tuple[float | None, dict[str, Scalar]]:
+        results: List[Tuple[ClientProxy, EvaluateRes]],
+        failures: List[Union[Tuple[ClientProxy, EvaluateRes], BaseException]],
+    ) -> Tuple[Optional[float], Dict[str, Scalar]]:
         """Aggregate evaluation losses using weighted average."""
         if not results:
             return None, {}
@@ -336,9 +313,12 @@ class AFL(Strategy):
         self.project()
 
         # Aggregate loss
-        loss_aggregated = weighted_loss_avg([
-            (self.lambdas[cli.cid], evaluate_res.loss) for cli, evaluate_res in results
-        ])
+        loss_aggregated = weighted_loss_avg(
+            [
+                (self.lambdas[cli.cid], evaluate_res.loss)
+                for cli, evaluate_res in results
+            ]
+        )
 
         # Aggregate custom metrics if aggregation fn was provided
         metrics_aggregated = {}

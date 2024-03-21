@@ -7,8 +7,8 @@ def project(y: list[float]) -> list[float]:
     u = sorted(y, reverse=True)
     rho = None
 
-    prefix_sum = 0
-    rho_prefix_sum = 0
+    prefix_sum = 0.0
+    rho_prefix_sum = 0.0
     for i in range(len(u)):
         prefix_sum += u[i]
         if u[i] + 1 / (i + 1) * (1 - prefix_sum) > 0:
@@ -21,7 +21,9 @@ def project(y: list[float]) -> list[float]:
 
     y_proj = [max(yi + l, 0.0) for yi in y]
 
-    assert abs(sum(y_proj)- 1) < 1e-5, f"""Projection failed, expected sum: 1. Found: {sum(y_proj)}
+    assert (
+        abs(sum(y_proj) - 1) < 1e-5
+    ), f"""Projection failed, expected sum: 1. Found: {sum(y_proj)}
 translation value: {l}
 rho: {rho}
 initial list: {y}
