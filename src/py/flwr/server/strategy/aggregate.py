@@ -117,6 +117,85 @@ def aggregate_krum(
     # Return the model parameters that minimize the score (Krum)
     return weights[np.argmin(scores)]
 
+def aggregate_bulyan(
+    results: list[tuple[NDArrays, int]],
+    num_malicious: int,
+    aggregation_rule: Callable,  # type: ignore
+    **aggregation_rule_kwargs: Any,
+) -> NDArrays:
+    """Perform Bulyan aggregation.
+    Parameters
+    ----------
+    results: List[Tuple[NDArrays, int]]
+        Weights and number of samples for each of the client.
+    num_malicious: int
+        The maximum number of malicious clients.
+    aggregation_rule: Callable
+        Byzantine resilient aggregation rule used as the first step of the Bulyan
+    aggregation_rule_kwargs: Any
+        The arguments to the aggregation rule.
+    Returns
+    -------
+    aggregated_parameters: NDArrays
+        Aggregated parameters according to the Bulyan strategy.
+    """
+    byzantine_resilient_single_ret_model_aggregation = [aggregate_krum]
+    # also GeoMed (but not implemented yet)
+    byzantine_resilient_many_return_models_aggregation = []  # type: ignore
+    # Brute, Medoid (but not implemented yet)
+
+    num_clients = len(results)
+    if num_clients < 4 * num_malicious + 3:
+        raise ValueError(
+            "The Bulyan aggregation requires then number of clients to be greater or "
+            "equal to the 4 * num_malicious + 3. This is the assumption of this method."
+            "It is needed to ensure that the method reduces the attacker's leeway to "
+            "the one proved in the paper."
+        )
+    selected_models_set: list[tuple[NDArrays, int]] = []
+
+    theta = len(results) - 2 * num_malicious
+    beta = theta - 2 * num_malicious
+
+    for _ in range(theta):
+        best_model = aggregation_rule(
+            results=results, num_malicious=num_malicious, **aggregation_rule_kwargs
+        )
+        list_of_weights = [weights for weights, num_samples in results]
+        # This group gives exact result
+        if aggregation_rule in byzantine_resilient_single_ret_model_aggregation:
+            best_idx = _find_reference_weights(best_model, list_of_weights)
+        # This group requires finding the closest model to the returned one
+        # (weights distance wise)
+        elif aggregation_rule in byzantine_resilient_many_return_models_aggregation:
+            # when different aggregation strategies available
+            # write a function to find the closest model
+            raise NotImplementedError(
+                "aggregate_bulyan currently does not support the aggregation rules that"
+                " return many models as results. "
+                "Such aggregation rules are currently not available in Flower."
+            )
+        else:
+            raise ValueError(
+                "The given aggregation rule is not added as Byzantine resilient. "
+                "Please choose from Byzantine resilient rules."
+            )
+
+        selected_models_set.append(results[best_idx])
+
+        # remove idx from tracker and weights_results
+        results.pop(best_idx)
+
+    # Compute median parameter vector across selected_models_set
+    median_vect = aggregate_median(selected_models_set)
+
+    # Take the averaged beta parameters of the closest distance to the median
+    # (coordinate-wise)
+    parameters_aggregated = _aggregate_n_closest_weights(
+        median_vect, selected_models_set, beta_closest=beta
+    )
+    return parameters_aggregated
+
 
 def weighted_loss_avg(results: list[tuple[int | float, float]]) -> float:
     """Aggregate evaluation results obtained from multiple clients."""
