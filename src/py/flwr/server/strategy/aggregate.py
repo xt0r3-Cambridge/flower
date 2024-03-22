@@ -16,6 +16,8 @@
 # mypy: disallow_untyped_calls=False
 
 from functools import reduce
+from typing import Any
+from collections.abc import Callable
 
 import numpy as np
 
@@ -117,13 +119,15 @@ def aggregate_krum(
     # Return the model parameters that minimize the score (Krum)
     return weights[np.argmin(scores)]
 
+
 def aggregate_bulyan(
     results: list[tuple[NDArrays, int]],
     num_malicious: int,
-    aggregation_rule: Callable,  # type: ignore
+    aggregation_rule: Callable,  # type: ignore noqa: PGH003
     **aggregation_rule_kwargs: Any,
 ) -> NDArrays:
     """Perform Bulyan aggregation.
+
     Parameters
     ----------
     results: List[Tuple[NDArrays, int]]
@@ -134,6 +138,7 @@ def aggregate_bulyan(
         Byzantine resilient aggregation rule used as the first step of the Bulyan
     aggregation_rule_kwargs: Any
         The arguments to the aggregation rule.
+
     Returns
     -------
     aggregated_parameters: NDArrays
@@ -141,7 +146,7 @@ def aggregate_bulyan(
     """
     byzantine_resilient_single_ret_model_aggregation = [aggregate_krum]
     # also GeoMed (but not implemented yet)
-    byzantine_resilient_many_return_models_aggregation = []  # type: ignore
+    byzantine_resilient_many_return_models_aggregation = []  # type: ignore noqa: PGH003
     # Brute, Medoid (but not implemented yet)
 
     num_clients = len(results)

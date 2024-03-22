@@ -18,6 +18,7 @@ Paper: arxiv.org/abs/1902.00146v1
 """
 
 from collections import defaultdict
+from copy import deepcopy
 import numpy as np
 
 from logging import WARNING
@@ -177,7 +178,8 @@ class AFL(Strategy):
 
     def initialize_parameters(self, client_manager: ClientManager) -> Parameters | None:
         """Initialize global model parameters."""
-        initial_parameters = self.initial_parameters
+        initial_parameters = deepcopy(self.initial_parameters)
+        self.saved_parameters = deepcopy(self.initial_parameters)
         self.initial_parameters = None  # Don't keep initial parameters in memory
         # Initialize the lambdas to 1 / num_clients
         self.lambdas = defaultdict(
@@ -287,12 +289,22 @@ AFL requires the models to return the training loss under the key "train_loss"''
 
         self.project()
 
-        # TODO: change this
         # Aggregate the results weighting by the lambdas
+        stable_fraction: float = (
+            1.0 - np.sum([self.lambdas[cli.cid] for cli, _ in results]).item()
+        )
+
+        min_thresh = 1e-5
+
         lambda_weighted_results = [
             (parameters_to_ndarrays(fit_res.parameters), self.lambdas[cli.cid])
             for cli, fit_res in results
-        ]
+        ] + (
+            [(parameters_to_ndarrays(self.saved_parameters), stable_fraction)]
+            if stable_fraction > min_thresh and self.saved_parameters is not None
+            else []
+        )
+
         aggregated_ndarrays = aggregate(lambda_weighted_results)
 
         # Update lambdas
@@ -301,7 +313,7 @@ AFL requires the models to return the training loss under the key "train_loss"''
         # We treat unselected clients as those with 0 loss
 
         parameters_aggregated = ndarrays_to_parameters(aggregated_ndarrays)
-
+        self.saved_parameters = ndarrays_to_parameters(aggregated_ndarrays)
         # print(self.lambdas)
 
         # Aggregate custom metrics if aggregation fn was provided
