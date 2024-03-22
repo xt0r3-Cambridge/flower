@@ -146,7 +146,7 @@ def aggregate_bulyan(
     """
     byzantine_resilient_single_ret_model_aggregation = [aggregate_krum]
     # also GeoMed (but not implemented yet)
-    byzantine_resilient_many_return_models_aggregation = []  # type: ignore noqa: PGH003
+    byzantine_resilient_many_return_models_aggregation = []  # type: ignore
     # Brute, Medoid (but not implemented yet)
 
     num_clients = len(results)
